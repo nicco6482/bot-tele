@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 from dotenv import load_dotenv
 from aiohttp import web
@@ -80,38 +79,27 @@ async def health_check(request):
 async def telegram_webhook(request):
     telegram_app = request.app["telegram_app"]
     update_data = await request.json()
+    logger.info("Webhook request received from Telegram")
     update = Update.de_json(update_data, telegram_app.bot)
     await telegram_app.process_update(update)
     return web.Response(text="ok")
 
 async def configure_telegram(web_app):
     telegram_app = web_app["telegram_app"]
-
-    try:
-        await telegram_app.initialize()
-        await telegram_app.start()
-        await telegram_app.bot.set_webhook(
-            url=f"{web_app['base_url']}/telegram",
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        logger.info(f"Webhook URL: {web_app['base_url']}/telegram")
-    except Exception as e:
-        logger.error(f"Error configurando webhook: {e}")
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.bot.set_webhook(
+        url=f"{web_app['base_url']}/telegram",
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
+    logger.info(f"Webhook URL: {web_app['base_url']}/telegram")
 
 async def on_startup(web_app):
     logger.info(f"HTTP server listening on port {os.environ.get('PORT', '5000')}")
-    web_app["telegram_task"] = asyncio.create_task(configure_telegram(web_app))
+    await configure_telegram(web_app)
 
 async def on_cleanup(web_app):
-    telegram_task = web_app.get("telegram_task")
-    if telegram_task:
-        telegram_task.cancel()
-        try:
-            await telegram_task
-        except asyncio.CancelledError:
-            pass
-
     telegram_app = web_app["telegram_app"]
     if telegram_app.running:
         await telegram_app.bot.delete_webhook()
