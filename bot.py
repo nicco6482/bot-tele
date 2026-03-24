@@ -170,6 +170,9 @@ def main():
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY no está configurado")
 
+    # Puerto para webhooks (Render asigna automáticamente)
+    port = int(os.environ.get("PORT", 5000))
+
     # Crear aplicación
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -185,7 +188,21 @@ def main():
 
     # Iniciar bot
     logger.info("🤖 Bot iniciado!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # Usar webhooks para Render (o polling en local)
+    if os.environ.get("RENDER"):
+        # En Render, usar webhooks
+        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{TELEGRAM_TOKEN}"
+        logger.info(f"Webhook URL: {webhook_url}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=TELEGRAM_TOKEN,
+            webhook_url=webhook_url
+        )
+    else:
+        # En local, usar polling
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
