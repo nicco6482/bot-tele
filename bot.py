@@ -1,6 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
+from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from groq import Groq
@@ -9,9 +10,9 @@ from groq import Groq
 load_dotenv()
 
 # Configuración
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
+TELEGRAM_TOKEN = ""
+GROQ_API_KEY = ""
+ADMIN_USERNAME = ""
 
 # Configurar logging
 logging.basicConfig(
@@ -21,10 +22,84 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Cliente de Groq
-client = Groq(api_key=GROQ_API_KEY)
+client = None
 
 # Historial de conversaciones por usuario
 conversations = {}
+
+def get_env(*names):
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return ""
+
+def build_application():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("info", info_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
+
+    return app
+
+def get_render_base_url():
+    external_url = get_env("RENDER_EXTERNAL_URL")
+    if external_url:
+        return external_url.rstrip("/")
+
+    hostname = get_env("RENDER_EXTERNAL_HOSTNAME")
+    if hostname:
+        return f"https://{hostname}".rstrip("/")
+
+    return ""
+
+async def health_check(request):
+    return web.Response(text="ok")
+
+async def telegram_webhook(request):
+    telegram_app = request.app["telegram_app"]
+    update_data = await request.json()
+    update = Update.de_json(update_data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return web.Response(text="ok")
+
+async def on_startup(web_app):
+    telegram_app = web_app["telegram_app"]
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.bot.set_webhook(
+        url=f"{web_app['base_url']}/telegram",
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
+    logger.info(f"Webhook URL: {web_app['base_url']}/telegram")
+
+async def on_cleanup(web_app):
+    telegram_app = web_app["telegram_app"]
+    await telegram_app.bot.delete_webhook()
+    await telegram_app.stop()
+    await telegram_app.shutdown()
+
+def run_render_webhook(telegram_app):
+    port = int(os.environ.get("PORT", 5000))
+    base_url = get_render_base_url()
+
+    if not base_url:
+        raise ValueError("No se pudo determinar la URL pública de Render")
+
+    web_app = web.Application()
+    web_app["telegram_app"] = telegram_app
+    web_app["base_url"] = base_url
+    web_app.router.add_get("/health", health_check)
+    web_app.router.add_post("/telegram", telegram_webhook)
+    web_app.on_startup.append(on_startup)
+    web_app.on_cleanup.append(on_cleanup)
+
+    web.run_app(web_app, host="0.0.0.0", port=port)
 
 def get_system_prompt(username=None):
     """Prompt del sistema para Claude-like behavior"""
@@ -164,44 +239,26 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Iniciar el bot"""
+    global TELEGRAM_TOKEN, GROQ_API_KEY, ADMIN_USERNAME, client
+
+    TELEGRAM_TOKEN = get_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN", "BOT_TOKEN")
+    GROQ_API_KEY = get_env("GROQ_API_KEY")
+    ADMIN_USERNAME = get_env("ADMIN_USERNAME")
+
     if not TELEGRAM_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN no está configurado")
 
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY no está configurado")
 
-    # Puerto para webhooks (Render asigna automáticamente)
-    port = int(os.environ.get("PORT", 5000))
+    client = Groq(api_key=GROQ_API_KEY)
+    app = build_application()
 
-    # Crear aplicación
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Añadir handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(CommandHandler("info", info_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Manejar errores
-    app.add_error_handler(error_handler)
-
-    # Iniciar bot
     logger.info("🤖 Bot iniciado!")
 
-    # Usar webhooks para Render (o polling en local)
-    if os.environ.get("RENDER"):
-        # En Render, usar webhooks
-        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{TELEGRAM_TOKEN}"
-        logger.info(f"Webhook URL: {webhook_url}")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=TELEGRAM_TOKEN,
-            webhook_url=webhook_url
-        )
+    if os.environ.get("RENDER") or os.environ.get("RENDER_EXTERNAL_HOSTNAME"):
+        run_render_webhook(app)
     else:
-        # En local, usar polling
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
