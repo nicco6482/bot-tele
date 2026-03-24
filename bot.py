@@ -35,6 +35,22 @@ def get_env(*names):
             return value
     return ""
 
+def env_present(name):
+    value = os.getenv(name)
+    return bool(value and value.strip())
+
+def log_startup_environment():
+    logger.info(
+        "Env check: TELEGRAM_BOT_TOKEN=%s TELEGRAM_TOKEN=%s BOT_TOKEN=%s GROQ_API_KEY=%s RENDER=%s RENDER_EXTERNAL_HOSTNAME=%s PORT=%s",
+        env_present("TELEGRAM_BOT_TOKEN"),
+        env_present("TELEGRAM_TOKEN"),
+        env_present("BOT_TOKEN"),
+        env_present("GROQ_API_KEY"),
+        env_present("RENDER"),
+        bool(get_env("RENDER_EXTERNAL_HOSTNAME")),
+        get_env("PORT") or "missing"
+    )
+
 def build_application():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -260,7 +276,15 @@ def main():
     """Iniciar el bot"""
     global TELEGRAM_TOKEN, GROQ_API_KEY, ADMIN_USERNAME, client
 
-    TELEGRAM_TOKEN = get_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN", "BOT_TOKEN")
+    log_startup_environment()
+
+    TELEGRAM_TOKEN = get_env(
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_TOKEN",
+        "BOT_TOKEN",
+        "TOKEN",
+        "TG_BOT_TOKEN"
+    )
     GROQ_API_KEY = get_env("GROQ_API_KEY")
     ADMIN_USERNAME = get_env("ADMIN_USERNAME")
 
