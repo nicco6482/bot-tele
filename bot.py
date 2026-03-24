@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from dotenv import load_dotenv
 from aiohttp import web
@@ -67,21 +68,38 @@ async def telegram_webhook(request):
     await telegram_app.process_update(update)
     return web.Response(text="ok")
 
-async def on_startup(web_app):
+async def configure_telegram(web_app):
     telegram_app = web_app["telegram_app"]
-    await telegram_app.initialize()
-    await telegram_app.start()
-    await telegram_app.bot.set_webhook(
-        url=f"{web_app['base_url']}/telegram",
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
-    logger.info(f"Webhook URL: {web_app['base_url']}/telegram")
+
+    try:
+        await telegram_app.initialize()
+        await telegram_app.start()
+        await telegram_app.bot.set_webhook(
+            url=f"{web_app['base_url']}/telegram",
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        logger.info(f"Webhook URL: {web_app['base_url']}/telegram")
+    except Exception as e:
+        logger.error(f"Error configurando webhook: {e}")
+
+async def on_startup(web_app):
+    logger.info(f"HTTP server listening on port {os.environ.get('PORT', '5000')}")
+    web_app["telegram_task"] = asyncio.create_task(configure_telegram(web_app))
 
 async def on_cleanup(web_app):
+    telegram_task = web_app.get("telegram_task")
+    if telegram_task:
+        telegram_task.cancel()
+        try:
+            await telegram_task
+        except asyncio.CancelledError:
+            pass
+
     telegram_app = web_app["telegram_app"]
-    await telegram_app.bot.delete_webhook()
-    await telegram_app.stop()
+    if telegram_app.running:
+        await telegram_app.bot.delete_webhook()
+        await telegram_app.stop()
     await telegram_app.shutdown()
 
 def run_render_webhook(telegram_app):
@@ -99,6 +117,7 @@ def run_render_webhook(telegram_app):
     web_app.on_startup.append(on_startup)
     web_app.on_cleanup.append(on_cleanup)
 
+    logger.info(f"Starting HTTP server on 0.0.0.0:{port}")
     web.run_app(web_app, host="0.0.0.0", port=port)
 
 def get_system_prompt(username=None):
